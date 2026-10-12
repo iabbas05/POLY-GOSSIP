@@ -1,0 +1,10 @@
+{
+  "name": "Gossip BH",
+  "short_name": "Gossip BH",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f4f6f8",
+  "theme_color": "#0f6cbf",
+  "description": "A Bahrain Polytechnic student community app.",
+  "icons": [{"src":"mascot.jpg","sizes":"512x512","type":"image/jpeg","purpose":"any maskable"}]
+}
