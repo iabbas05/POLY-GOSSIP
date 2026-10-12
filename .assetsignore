@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+index.js
+package.json
+bun.lock
+bun.lockb
+package-lock.json
+README.md
+validate.mjs
+wrangler.jsonc
+0000_gossip_auth.sql
