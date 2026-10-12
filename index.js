@@ -4,6 +4,23 @@ const OTP_SECONDS = 600;
 const RESET_SECONDS = 1800;
 const EMAIL_RE = /^[a-z0-9._%+-]+@student\.polytechnic\.bh$/;
 const encoder = new TextEncoder();
+let schemaReady;
+function ensureSchema(db) {
+  if (!schemaReady) {
+    schemaReady = db.batch([
+      db.prepare("CREATE TABLE IF NOT EXISTS students (email TEXT PRIMARY KEY NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, verified_at INTEGER NOT NULL, created_at INTEGER NOT NULL)"),
+      db.prepare("CREATE TABLE IF NOT EXISTS auth_tokens (id TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL, purpose TEXT NOT NULL, code_hash TEXT, token_hash TEXT, expires_at INTEGER NOT NULL, attempts INTEGER DEFAULT 0 NOT NULL, consumed_at INTEGER, created_at INTEGER NOT NULL)"),
+      db.prepare("CREATE INDEX IF NOT EXISTS auth_tokens_email_purpose_idx ON auth_tokens (email, purpose)"),
+      db.prepare("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)"),
+      db.prepare("CREATE INDEX IF NOT EXISTS sessions_email_idx ON sessions (email)"),
+      db.prepare("CREATE TABLE IF NOT EXISTS auth_limits (bucket TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)")
+    ]).catch((error) => {
+      schemaReady = undefined;
+      throw error;
+    });
+  }
+  return schemaReady;
+}
 
 const b64 = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 const unb64 = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0));
@@ -18,7 +35,7 @@ async function limited(env,req,id) { const now=Math.floor(Date.now()/1000), end=
 function mail(env,title,text,action,foot) { const logo=(env.PUBLIC_APP_URL||"")+"/mascot.jpg"; return `<!doctype html><html><body style="margin:0;background:#f2f5f8;font-family:Arial,sans-serif;color:#343a40"><table width="100%" style="padding:28px 12px;background:#f2f5f8"><tr><td align="center"><table width="100%" style="max-width:520px;background:white;border:1px solid #dfe3e7"><tr><td style="padding:22px 24px;border-bottom:1px solid #e8ecef"><img src="${logo}" width="42" height="42" style="vertical-align:middle;border-radius:50%;object-fit:cover"><b style="margin-left:10px;font-size:17px">Gossip BH</b><div style="margin:5px 0 0 52px;color:#74808a;font-size:11px">Bahrain Polytechnic student community</div></td></tr><tr><td style="padding:28px 24px"><div style="font-size:28px">✉️</div><h1 style="font-size:22px">${title}</h1><p style="font-size:14px;line-height:1.6;color:#66717b">${text}</p>${action}<p style="font-size:12px;color:#7b858d">${foot}</p></td></tr><tr><td style="padding:17px 24px;background:#f7f8f9;border-top:1px solid #e8ecef;color:#7e8992;font-size:11px">If you did not request this, ignore this message.<br>© Gossip BH</td></tr></table></td></tr></table></body></html>`; }
 async function send(env,to,subject,html) { if(!env.RESEND_API_KEY||!env.MAIL_FROM) throw Error("MAIL"); const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{authorization:"Bearer "+env.RESEND_API_KEY,"content-type":"application/json"},body:JSON.stringify({from:env.MAIL_FROM,to:[to],subject,html})}); if(!r.ok) throw Error("MAIL"); }
 function same(a,b){if(a.length!==b.length)return false;let n=0;for(let i=0;i<a.length;i++)n|=a.charCodeAt(i)^b.charCodeAt(i);return n===0;}
-async function auth(req,env,path){ const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join("/"); if(!db||!env.AUTH_SECRET||env.AUTH_SECRET.length<32)return response({error:"Authentication is not configured."},503);
+async function auth(req,env,path){ const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join("/"); if(!db||!env.AUTH_SECRET||env.AUTH_SECRET.length<32)return response({error:"Authentication is not configured."},503); await ensureSchema(db);
  if(req.method==="GET"&&route==="session"){const t=getCookie(req);if(!t)return response({student:null});const r=await db.prepare("SELECT students.email FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(t),now).first();return response({student:r?{email:r.email,verified:true}:null});}
  if(req.method!=="POST"||req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403); let d;try{if(!req.headers.get("content-type")?.includes("application/json"))throw 0;const raw=await req.text();if(raw.length>10000)throw 0;d=JSON.parse(raw);}catch{return response({error:"Invalid request."},400)}
  if(route==="register/request"){const email=emailOf(d.email);if(!EMAIL_RE.test(email))return response({error:"Use your @student.polytechnic.bh email."},400);if(!(await limited(env,req,email)))return response({error:"Too many attempts. Try later."},429);if(await db.prepare("SELECT email FROM students WHERE email=?").bind(email).first())return response({error:"Account already exists. Sign in or reset your password."},409);const code=String(crypto.getRandomValues(new Uint32Array(1))[0]%1e6).padStart(6,"0"),id=b64(crypto.getRandomValues(new Uint8Array(18)));await db.batch([db.prepare("DELETE FROM auth_tokens WHERE email=? AND purpose='verify'").bind(email),db.prepare("INSERT INTO auth_tokens (id,email,purpose,code_hash,expires_at,attempts,created_at) VALUES (?,?,'verify',?,?,0,?)").bind(id,email,await mac(env,email+":"+code),now+OTP_SECONDS,now)]);try{await send(env,email,"Verify your Gossip BH student account",mail(env,"Verify your student email","Enter this code to finish creating your verified Bahrain Polytechnic student account.",`<div style="margin:22px 0;padding:17px;background:#eef6fd;border-left:4px solid #0f6cbf;text-align:center;font-size:30px;font-weight:bold;letter-spacing:8px;color:#075493">${code}</div>`,"The code expires in 10 minutes. Do not share it."));}catch{await db.prepare("DELETE FROM auth_tokens WHERE id=?").bind(id).run();return response({error:"Email delivery is not configured."},503)}return response({ok:true});}
