@@ -3,6 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 for (const file of [
   "index.js",
   "index.html",
+  "app.css",
+  "app.js",
+  "social.js",
   "mascot.jpg",
   "manifest.json",
   "sw.js",

@@ -1,3 +1,4 @@
+import { socialApi } from "./social.js";
 const COOKIE = "gbh_session";
 const SESSION_SECONDS = 60 * 60 * 24 * 30;
 const OTP_SECONDS = 600;
@@ -57,7 +58,7 @@ async function auth(req,env,path){ const db=env.DB,now=Math.floor(Date.now()/100
 async function currentStudent(req,db,now){
  const token=getCookie(req);
  if(!token)return null;
- return db.prepare("SELECT students.email FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(token),now).first();
+ return db.prepare("SELECT students.email,students.role,students.status FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(token),now).first();
 }
 async function publicConfig(req,env){
  const now=Math.floor(Date.now()/1000);await ensureSchema(env.DB);
@@ -96,22 +97,22 @@ async function admin(req,env,path){
  await ensureSchema(db);
  const student=await currentStudent(req,db,now);
  if(!student)return response({error:"Sign in is required."},401);
- if(student.email!==ADMIN_EMAIL)return response({error:"This area is restricted to the Super Admin."},403);
+ if(student.email!==ADMIN_EMAIL&&student.role!=="admin")return response({error:"This area is restricted to administrators."},403);
  if(req.method==="GET"&&route==="overview"){
   const [students,sessions,pending,limitedRows,latest]=await Promise.all([
-   db.prepare("SELECT COUNT(*) AS total FROM students").first(),
+   db.prepare("SELECT COUNT(*) AS total FROM students WHERE role <> 'system'").first(),
    db.prepare("SELECT COUNT(*) AS total FROM sessions WHERE expires_at>?").bind(now).first(),
    db.prepare("SELECT COUNT(*) AS total FROM auth_tokens WHERE consumed_at IS NULL AND expires_at>?").bind(now).first(),
    db.prepare("SELECT COUNT(*) AS total FROM auth_limits WHERE reset_at>?").bind(now).first(),
-   db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 10").all()
+   db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students WHERE role <> 'system' ORDER BY created_at DESC LIMIT 10").all()
   ]);
   return response({admin:{email:student.email},stats:{students:Number(students?.total||0),activeSessions:Number(sessions?.total||0),pendingTokens:Number(pending?.total||0),activeRateLimits:Number(limitedRows?.total||0)},latestStudents:latest.results||[]});
  }
  if(req.method==="GET"&&route==="students"){
   const q=(new URL(req.url).searchParams.get("q")||"").trim().toLowerCase().slice(0,100);
   const rows=q
-   ? await db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students WHERE email LIKE ? ORDER BY created_at DESC LIMIT 100").bind("%"+q+"%").all()
-   : await db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 100").all();
+   ? await db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students WHERE role <> 'system' AND email LIKE ? ORDER BY created_at DESC LIMIT 100").bind("%"+q+"%").all()
+   : await db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students WHERE role <> 'system' ORDER BY created_at DESC LIMIT 100").all();
   return response({students:rows.results||[]});
  }
  if(req.method==="GET"&&route==="settings"){
@@ -146,6 +147,12 @@ async function admin(req,env,path){
  if(req.method==="GET"&&route==="reports"){
   const status=(new URL(req.url).searchParams.get('status')||'open').slice(0,20);const rows=await db.prepare("SELECT * FROM reports WHERE status=? ORDER BY created_at DESC LIMIT 100").bind(status).all();return response({reports:rows.results||[]});
  }
+ if(req.method==="GET"&&route==="gossip"){
+  const status=(new URL(req.url).searchParams.get('status')||'pending').slice(0,20);const rows=await db.prepare("SELECT g.id,g.sender_email,g.body,g.status,g.reply_body,g.replied_by,g.replied_at,g.created_at FROM gossip_messages g WHERE g.status=? ORDER BY g.created_at DESC LIMIT 100").bind(status).all();return response({messages:rows.results||[]});
+ }
+ if(req.method==="PATCH"&&path[0]==="gossip"&&path[1]){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);let data;try{data=await req.json()}catch{return response({error:"Invalid request."},400)}const reply=typeof data.reply==='string'?data.reply.trim().slice(0,1000):'';if(!reply)return response({error:"Write a reply before publishing."},400);const message=await db.prepare("SELECT sender_email FROM gossip_messages WHERE id=? AND status='pending'").bind(path[1]).first();if(!message)return response({error:"Message not found."},404);await db.batch([db.prepare("UPDATE gossip_messages SET status='published',reply_body=?,replied_by=?,replied_at=?,published_at=? WHERE id=?").bind(reply,student.email,now,now,path[1]),db.prepare("INSERT INTO notifications(id,recipient_email,actor_email,type,entity_type,entity_id,payload,created_at) VALUES(?,?,?,'gossip_reply','gossip',?,'{}',?)").bind(id(),message.sender_email,student.email,path[1],now)]);return response({ok:true});
+ }
  if(req.method==="PATCH"&&path[0]==="reports"&&path[1]){
   if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);let data;try{data=await req.json()}catch{return response({error:"Invalid request."},400)}const status=['open','resolved','dismissed'].includes(data.status)?data.status:null;if(!status)return response({error:"Invalid status."},400);await db.prepare("UPDATE reports SET status=?,resolution=?,resolved_by=?,resolved_at=? WHERE id=?").bind(status,String(data.resolution||'').slice(0,500),student.email,status==='open'?null:now,path[1]).run();return response({ok:true});
  }
@@ -160,4 +167,4 @@ async function admin(req,env,path){
  return response({error:"Not found."},404);
 }
 
-export default { async fetch(req,env){const u=new URL(req.url),isAdminHost=u.hostname.toLowerCase()==="admin.gossipbh.com";if(/(?:^|\/)\.|\.(?:sql|map|toml|jsonc|md|mjs)$/i.test(u.pathname)||u.pathname==="/package.json")return response({error:"Not found."},404);if(req.method==="GET"&&u.pathname==="/api/config")try{return await publicConfig(req,env)}catch{return response({error:"Configuration is unavailable."},500)}if(u.pathname.startsWith("/api/admin/")){if(!isAdminHost)return response({error:"Administration is available only on admin.gossipbh.com."},404);try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch(error){console.error("Admin API error",error?.message);return response({error:"Something went wrong. Try again."},500)}}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/community/"))try{return await community(req,env,u.pathname.slice("/api/community/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith('/media/')&&env.MEDIA){const key=decodeURIComponent(u.pathname.slice(7));if(!key||key.includes('..'))return response({error:'Not found.'},404);const object=await env.MEDIA.get(key);if(!object)return response({error:'Not found.'},404);return new Response(object.body,{headers:{'content-type':object.httpMetadata?.contentType||'application/octet-stream','cache-control':'public,max-age=31536000,immutable','x-content-type-options':'nosniff'}})}if(isAdminHost&&(u.pathname==="/"||u.pathname==="/admin.html"))return env.ASSETS.fetch(new Request(new URL("/admin.html",req.url)));if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };
+export default { async fetch(req,env){const u=new URL(req.url),isAdminHost=u.hostname.toLowerCase()==="admin.gossipbh.com";if(/(?:^|\/)\.|\.(?:sql|map|toml|jsonc|md|mjs)$/i.test(u.pathname)||u.pathname==="/package.json")return response({error:"Not found."},404);if(req.method==="GET"&&u.pathname==="/api/config")try{return await publicConfig(req,env)}catch{return response({error:"Configuration is unavailable."},500)}if(u.pathname.startsWith("/api/social/"))return socialApi(req,env,u.pathname.slice(12).split("/"));if(u.pathname.startsWith("/api/admin/")){if(!isAdminHost)return response({error:"Administration is available only on admin.gossipbh.com."},404);try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch(error){console.error("Admin API error",error?.message);return response({error:"Something went wrong. Try again."},500)}}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/community/"))try{return await community(req,env,u.pathname.slice("/api/community/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith('/media/')&&env.MEDIA){const key=decodeURIComponent(u.pathname.slice(7));if(!key||key.includes('..'))return response({error:'Not found.'},404);const object=await env.MEDIA.get(key);if(!object)return response({error:'Not found.'},404);return new Response(object.body,{headers:{'content-type':object.httpMetadata?.contentType||'application/octet-stream','cache-control':'public,max-age=31536000,immutable','x-content-type-options':'nosniff'}})}if(isAdminHost&&(u.pathname==="/"||u.pathname==="/admin.html"))return env.ASSETS.fetch(new Request(new URL("/admin.html",req.url)));if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };

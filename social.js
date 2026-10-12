@@ -1,0 +1,95 @@
+const enc = new TextEncoder();
+const COOKIE = "gbh_session";
+const ADMIN = "iabbas05@icloud.com";
+const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers } });
+const uid = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(18)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
+const hash = async value => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256",enc.encode(value))))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
+const cookie = req => (req.headers.get("cookie") || "").match(/(?:^|;\s*)gbh_session=([^;]+)/)?.[1] || "";
+const clean = (value, max = 500) => typeof value === "string" ? value.trim().slice(0,max) : "";
+const originOk = req => req.headers.get("origin") === new URL(req.url).origin;
+
+async function viewer(req, env, required = false) {
+  const token = cookie(req), now = Math.floor(Date.now()/1000);
+  if (!token) { if (required) throw Object.assign(new Error("Sign in is required."),{status:401}); return null; }
+  const row = await env.DB.prepare(`SELECT s.email,s.role,s.status,s.suspended_until,s.suspension_reason,p.username,p.display_name,p.bio,p.avatar_key,p.major,p.study_year,p.hidden_from_search,p.hide_follow_lists
+    FROM sessions x JOIN students s ON s.email=x.email LEFT JOIN profiles p ON p.email=s.email
+    WHERE x.token_hash=? AND x.expires_at>? LIMIT 1`).bind(await hash(token),now).first();
+  if (!row) { if(required) throw Object.assign(new Error("Sign in is required."),{status:401}); return null; }
+  if (row.status === "suspended" && (!row.suspended_until || row.suspended_until > now)) throw Object.assign(new Error(row.suspension_reason || "This account is suspended."),{status:403});
+  if (row.status === "suspended" && row.suspended_until && row.suspended_until <= now) await env.DB.prepare("UPDATE students SET status='active',suspended_until=NULL,suspension_reason=NULL WHERE email=?").bind(row.email).run();
+  return row;
+}
+async function body(req){try{if(!req.headers.get("content-type")?.includes("application/json"))throw 0;return await req.json()}catch{throw Object.assign(new Error("Invalid request."),{status:400})}}
+async function settings(env){const rows=await env.DB.prepare("SELECT key,value FROM app_settings").all();return Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value]));}
+function publicUser(row, anonymous = false){if(anonymous)return {username:"poly_gossip",display_name:"Poly Gossip",avatar_url:"/mascot.jpg",role:"admin"};return {username:row.username||null,display_name:row.display_name||row.username||"Poly Student",avatar_url:row.avatar_key?"/media/"+row.avatar_key:null,role:row.role||"student"};}
+async function mediaFor(env, ids){if(!ids.length)return new Map();const q=ids.map(()=>"?").join(","),rows=await env.DB.prepare(`SELECT pm.post_id,m.id,m.object_key,m.kind,m.mime_type,pm.position FROM post_media pm JOIN media m ON m.id=pm.media_id WHERE pm.post_id IN (${q}) ORDER BY pm.position`).bind(...ids).all();const map=new Map();for(const m of rows.results||[]){if(!map.has(m.post_id))map.set(m.post_id,[]);map.get(m.post_id).push({id:m.id,url:"/media/"+m.object_key,kind:m.kind,mime_type:m.mime_type})}return map;}
+async function feed(req,env,user){
+  const url=new URL(req.url),mode=url.searchParams.get("mode")==="latest"?"latest":"for-you",limit=user?40:12;
+  const email=user?.email||"";
+  const rows=await env.DB.prepare(`SELECT p.id,p.author_email,p.body,p.comments_enabled,p.created_at,p.published_at,pr.username,pr.display_name,pr.avatar_key,s.role,
+    (SELECT COUNT(*) FROM post_likes l WHERE l.post_id=p.id) likes,(SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id) comments,
+    EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.email=?) liked,EXISTS(SELECT 1 FROM post_bookmarks b WHERE b.post_id=p.id AND b.email=?) bookmarked
+    FROM social_posts p JOIN students s ON s.email=p.author_email LEFT JOIN profiles pr ON pr.email=p.author_email
+    WHERE p.status='published' ${user?"AND NOT EXISTS(SELECT 1 FROM not_interested n WHERE n.post_id=p.id AND n.email=?)":""}
+    ORDER BY ${mode==="latest"?"COALESCE(p.published_at,p.created_at) DESC":"p.pinned_at DESC,(likes*2+comments*3) DESC,COALESCE(p.published_at,p.created_at) DESC"} LIMIT ?`).bind(...(user?[email,email,email,limit]:[email,email,limit])).all();
+  const posts=rows.results||[],media=await mediaFor(env,posts.map(p=>p.id));
+  return json({viewer:user?{email:user.email,...publicUser(user),needs_profile:!user.username}:null,posts:posts.map(p=>({...p,likes:Number(p.likes||0),comments:Number(p.comments||0),liked:!!p.liked,bookmarked:!!p.bookmarked,author:publicUser(p),media:media.get(p.id)||[]})),guest:!user});
+}
+async function notify(env,recipient,actor,type,entityType,entityId,payload={}){if(!recipient||recipient===actor)return;await env.DB.prepare("INSERT INTO notifications(id,recipient_email,actor_email,type,entity_type,entity_id,payload,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(uid(),recipient,actor,type,entityType,entityId,JSON.stringify(payload),Math.floor(Date.now()/1000)).run();}
+
+export async function socialApi(req,env,path){
+ try{
+  const route=path.join("/"),now=Math.floor(Date.now()/1000),user=await viewer(req,env,false);
+  if(req.method==="GET"&&route==="feed")return feed(req,env,user);
+  if(req.method==="GET"&&route==="me")return json({student:user?{email:user.email,...publicUser(user),bio:user.bio||"",major:user.major||"",study_year:user.study_year||"",needs_profile:!user.username}:null});
+  if(req.method==="GET"&&route==="gossip"){
+   const rows=await env.DB.prepare("SELECT g.id,g.body,g.reply_body,g.published_at,g.created_at FROM gossip_messages g WHERE g.status='published' ORDER BY g.published_at DESC LIMIT ?").bind(user?50:12).all();return json({messages:rows.results||[]});
+  }
+  if(req.method==="GET"&&route==="offers"){
+   const rows=await env.DB.prepare("SELECT o.id,o.title,o.description,o.image_key,p.name partner_name FROM offers o JOIN partners p ON p.id=o.partner_id WHERE o.active=1 ORDER BY o.created_at DESC").all();return json({offers:(rows.results||[]).map(o=>({...o,image_url:o.image_key?'/media/'+o.image_key:null}))});
+  }
+  const me=user||await viewer(req,env,true);if(!originOk(req)&&req.method!=="GET")return json({error:"Request origin could not be verified."},403);
+  if(req.method==="PUT"&&route==="profile"){
+   const d=await body(req),username=clean(d.username,24).toLowerCase();if(!/^[a-z0-9_]{3,24}$/.test(username))return json({error:"Username must be 3–24 characters using letters, numbers or _."},400);
+   const display=clean(d.display_name,40)||username,bio=clean(d.bio,160),major=clean(d.major,60),year=clean(d.study_year,30),avatar=clean(d.avatar_key,180)||null;
+   try{await env.DB.prepare(`INSERT INTO profiles(email,username,display_name,bio,avatar_key,major,study_year,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET username=excluded.username,display_name=excluded.display_name,bio=excluded.bio,avatar_key=COALESCE(excluded.avatar_key,profiles.avatar_key),major=excluded.major,study_year=excluded.study_year,updated_at=excluded.updated_at`).bind(me.email,username,display,bio,avatar,major,year,now,now).run();}catch{return json({error:"That username is already taken."},409)}return json({ok:true});
+  }
+  if(req.method==="GET"&&path[0]==="profiles"&&path[1]){
+   const p=await env.DB.prepare(`SELECT p.*,s.role,(SELECT COUNT(*) FROM follows WHERE followed_email=p.email) followers,(SELECT COUNT(*) FROM follows WHERE follower_email=p.email) following,EXISTS(SELECT 1 FROM follows WHERE follower_email=? AND followed_email=p.email) followed FROM profiles p JOIN students s ON s.email=p.email WHERE p.username=? COLLATE NOCASE`).bind(me.email,path[1]).first();if(!p)return json({error:"Profile not found."},404);const posts=await env.DB.prepare("SELECT id,body,created_at FROM social_posts WHERE author_email=? AND status='published' ORDER BY created_at DESC LIMIT 30").bind(p.email).all();return json({profile:{...publicUser(p),bio:p.bio,major:p.major,study_year:p.study_year,followers:Number(p.followers),following:Number(p.following),followed:!!p.followed,is_me:p.email===me.email},posts:posts.results||[]});
+  }
+  if(req.method==="POST"&&path[0]==="profiles"&&path[2]==="follow"){
+   const target=await env.DB.prepare("SELECT email FROM profiles WHERE username=? COLLATE NOCASE").bind(path[1]).first();if(!target||target.email===me.email)return json({error:"Profile not found."},404);const old=await env.DB.prepare("SELECT 1 ok FROM follows WHERE follower_email=? AND followed_email=?").bind(me.email,target.email).first();if(old)await env.DB.prepare("DELETE FROM follows WHERE follower_email=? AND followed_email=?").bind(me.email,target.email).run();else{await env.DB.prepare("INSERT INTO follows(follower_email,followed_email,created_at) VALUES(?,?,?)").bind(me.email,target.email,now).run();await notify(env,target.email,me.email,"follow","profile",me.email)}return json({ok:true,followed:!old});
+  }
+  if(req.method==="POST"&&route==="media"){
+   if(!env.MEDIA)return json({error:"Media storage is unavailable."},503);const type=(req.headers.get("content-type")||"").split(";")[0],kind=type.startsWith("video/")?"video":type.startsWith("image/")?"image":"";if(!kind)return json({error:"Use an image or video file."},400);const bytes=await req.arrayBuffer(),max=kind==="video"?15*1024*1024:8*1024*1024;if(!bytes.byteLength||bytes.byteLength>max)return json({error:"File is too large."},413);const mediaId=uid(),ext=type.split("/")[1]?.replace(/[^a-z0-9]/g,"").slice(0,8)||"bin",key=`${me.email.replace(/[^a-z0-9]/g,"_")}/${now}-${mediaId}.${ext}`;await env.MEDIA.put(key,bytes,{httpMetadata:{contentType:type}});await env.DB.prepare("INSERT INTO media(id,owner_email,object_key,kind,mime_type,byte_size,created_at) VALUES(?,?,?,?,?,?,?)").bind(mediaId,me.email,key,kind,type,bytes.byteLength,now).run();return json({id:mediaId,key,url:"/media/"+key,kind},201);
+  }
+  if(req.method==="POST"&&route==="posts"){
+   const cfg=await settings(env);if(cfg.posting_enabled==="false")return json({error:"Posting is temporarily disabled."},403);const d=await body(req),text=clean(d.body,280),mediaIds=Array.isArray(d.media_ids)?d.media_ids.slice(0,4).map(String):[];if(!text&&!mediaIds.length)return json({error:"Write something or add media."},400);const status=cfg.require_post_approval==="true"?"pending":"published",postId=uid();await env.DB.prepare("INSERT INTO social_posts(id,author_email,body,status,comments_enabled,published_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)").bind(postId,me.email,text,status,d.comments_enabled===false?0:1,status==="published"?now:null,now,now).run();for(let i=0;i<mediaIds.length;i++)await env.DB.prepare("INSERT INTO post_media(post_id,media_id,position) SELECT ?,id,? FROM media WHERE id=? AND owner_email=?").bind(postId,i,mediaIds[i],me.email).run();return json({ok:true,id:postId,status},201);
+  }
+  if(req.method==="DELETE"&&path[0]==="posts"&&path[1]){await env.DB.prepare("DELETE FROM social_posts WHERE id=? AND author_email=?").bind(path[1],me.email).run();return json({ok:true});}
+  if(req.method==="POST"&&path[0]==="posts"&&path[2]==="like"){
+   const post=await env.DB.prepare("SELECT author_email FROM social_posts WHERE id=? AND status='published'").bind(path[1]).first();if(!post)return json({error:"Post not found."},404);const old=await env.DB.prepare("SELECT 1 ok FROM post_likes WHERE post_id=? AND email=?").bind(path[1],me.email).first();if(old)await env.DB.prepare("DELETE FROM post_likes WHERE post_id=? AND email=?").bind(path[1],me.email).run();else{await env.DB.prepare("INSERT INTO post_likes(post_id,email,created_at) VALUES(?,?,?)").bind(path[1],me.email,now).run();await notify(env,post.author_email,me.email,"like","post",path[1])}const n=await env.DB.prepare("SELECT COUNT(*) n FROM post_likes WHERE post_id=?").bind(path[1]).first();return json({ok:true,liked:!old,likes:Number(n.n)});
+  }
+  if(req.method==="POST"&&path[0]==="posts"&&path[2]==="bookmark"){
+   const old=await env.DB.prepare("SELECT 1 ok FROM post_bookmarks WHERE post_id=? AND email=?").bind(path[1],me.email).first();if(old)await env.DB.prepare("DELETE FROM post_bookmarks WHERE post_id=? AND email=?").bind(path[1],me.email).run();else await env.DB.prepare("INSERT INTO post_bookmarks(post_id,email,created_at) VALUES(?,?,?)").bind(path[1],me.email,now).run();return json({ok:true,bookmarked:!old});
+  }
+  if(req.method==="GET"&&path[0]==="posts"&&path[2]==="comments"){
+   const rows=await env.DB.prepare(`SELECT c.id,c.parent_id,c.body,c.created_at,p.username,p.display_name,p.avatar_key,s.role FROM comments c JOIN students s ON s.email=c.author_email LEFT JOIN profiles p ON p.email=c.author_email WHERE c.post_id=? ORDER BY c.created_at`).bind(path[1]).all();return json({comments:(rows.results||[]).map(c=>({...c,author:publicUser(c)}))});
+  }
+  if(req.method==="POST"&&path[0]==="posts"&&path[2]==="comments"){
+   const cfg=await settings(env);if(cfg.comments_enabled==="false")return json({error:"Comments are temporarily disabled."},403);const d=await body(req),text=clean(d.body,500);if(!text)return json({error:"Write a comment."},400);const post=await env.DB.prepare("SELECT author_email,comments_enabled FROM social_posts WHERE id=? AND status='published'").bind(path[1]).first();if(!post||!post.comments_enabled)return json({error:"Comments are unavailable."},403);let parent=clean(d.parent_id,80)||null;if(parent){const p=await env.DB.prepare("SELECT parent_id FROM comments WHERE id=? AND post_id=?").bind(parent,path[1]).first();if(!p)return json({error:"Reply target not found."},404);if(p.parent_id)parent=p.parent_id}const commentId=uid();await env.DB.prepare("INSERT INTO comments(id,post_id,author_email,parent_id,body,created_at) VALUES(?,?,?,?,?,?)").bind(commentId,path[1],me.email,parent,text,now).run();await notify(env,post.author_email,me.email,"comment","post",path[1],{comment_id:commentId});return json({ok:true,id:commentId},201);
+  }
+  if(req.method==="POST"&&route==="gossip"){
+   const d=await body(req),text=clean(d.body,1000),mediaIds=Array.isArray(d.media_ids)?d.media_ids.slice(0,4).map(String):[];if(!text&&!mediaIds.length)return json({error:"Write a gossip message or add images."},400);const gossipId=uid();await env.DB.prepare("INSERT INTO gossip_messages(id,sender_email,body,status,created_at) VALUES(?,?,?,'pending',?)").bind(gossipId,me.email,text,now).run();for(let i=0;i<mediaIds.length;i++)await env.DB.prepare("INSERT INTO gossip_media(gossip_id,media_id,position) SELECT ?,id,? FROM media WHERE id=? AND owner_email=? AND kind='image'").bind(gossipId,i,mediaIds[i],me.email).run();return json({ok:true,id:gossipId},201);
+  }
+  if(req.method==="GET"&&route==="notifications"){
+   const rows=await env.DB.prepare(`SELECT n.*,p.username,p.display_name,p.avatar_key FROM notifications n LEFT JOIN profiles p ON p.email=n.actor_email WHERE n.recipient_email=? ORDER BY n.created_at DESC LIMIT 80`).bind(me.email).all();return json({notifications:(rows.results||[]).map(n=>({...n,actor:n.actor_email?publicUser(n):null}))});
+  }
+  if(req.method==="POST"&&route==="notifications/read"){await env.DB.prepare("UPDATE notifications SET read_at=? WHERE recipient_email=? AND read_at IS NULL").bind(now,me.email).run();return json({ok:true});}
+  if(req.method==="POST"&&path[0]==="offers"&&path[2]==="claim"){
+   const offer=await env.DB.prepare("SELECT id,title FROM offers WHERE id=? AND active=1").bind(path[1]).first();if(!offer)return json({error:"Offer not found."},404);const old=await env.DB.prepare("SELECT redeemed_at FROM offer_claims WHERE offer_id=? AND student_email=?").bind(path[1],me.email).first();if(old)return json({error:old.redeemed_at?"This offer was already used.":"You already have a claim for this offer."},409);const token=uid()+uid(),claimId=uid();await env.DB.prepare("INSERT INTO offer_claims(id,offer_id,student_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)").bind(claimId,path[1],me.email,await hash(token),now+900,now).run();return json({ok:true,title:offer.title,token,expires_at:now+900,validation_url:(env.PUBLIC_APP_URL||new URL(req.url).origin)+"/offer/validate?token="+encodeURIComponent(token)});
+  }
+  if(req.method==="POST"&&route==="reports"){const d=await body(req),type=['post','comment','profile'].includes(d.target_type)?d.target_type:'post',target=clean(d.target_id,100),reason=clean(d.reason,100),details=clean(d.details,500);if(!target||!reason)return json({error:"Choose a report reason."},400);await env.DB.prepare("INSERT INTO reports(id,reporter_email,target_type,target_id,reason,details,created_at) VALUES(?,?,?,?,?,?,?)").bind(uid(),me.email,type,target,reason,details,now).run();return json({ok:true},201);}
+  return json({error:"Not found."},404);
+ }catch(error){console.error("Social API",error?.message);return json({error:error?.message||"Something went wrong."},error?.status||500)}
+}

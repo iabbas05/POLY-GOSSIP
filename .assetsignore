@@ -5,6 +5,7 @@
 .assetsignore
 node_modules
 index.js
+social.js
 package.json
 bun.lock
 bun.lockb
