@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node --check index.js",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler d1 migrations apply gossip-bh-db --remote && wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply gossip-bh-db --remote"
   },
   "devDependencies": {
