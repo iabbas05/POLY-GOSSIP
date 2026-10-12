@@ -27,7 +27,8 @@
     }
   ],
   "vars": {
-    "PUBLIC_APP_URL": "https://gossipbh.com"
+    "PUBLIC_APP_URL": "https://gossipbh.com",
+    "MAIL_FROM": "Gossip BH <auth@gossipbh.com>"
   },
   "routes": [
     {
