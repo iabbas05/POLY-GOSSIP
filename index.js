@@ -3,6 +3,7 @@ const SESSION_SECONDS = 60 * 60 * 24 * 30;
 const OTP_SECONDS = 600;
 const RESET_SECONDS = 1800;
 const EMAIL_RE = /^[a-z0-9._%+-]+@student\.polytechnic\.bh$/;
+const ADMIN_EMAIL = "202401431@student.polytechnic.bh";
 const encoder = new TextEncoder();
 let schemaReady;
 function ensureSchema(db) {
@@ -45,4 +46,45 @@ async function auth(req,env,path){ const db=env.DB,now=Math.floor(Date.now()/100
  if(route==="reset-password"){const token=typeof d.token==="string"?d.token:"",pw=typeof d.password==="string"?d.password:"";if(token.length<32||pw.length<10||pw.length>128||!/[a-z]/i.test(pw)||!/[0-9]/.test(pw))return response({error:"Reset link or new password is invalid."},400);if(!(await limited(env,req,token)))return response({error:"Too many attempts. Try later."},429);const row=await db.prepare("SELECT id,email,expires_at FROM auth_tokens WHERE token_hash=? AND purpose='reset' AND consumed_at IS NULL LIMIT 1").bind(await sha(token)).first();if(!row||row.expires_at<now)return response({error:"Reset link is invalid or expired."},400);const h=await password(pw),res=await db.batch([db.prepare("UPDATE auth_tokens SET consumed_at=? WHERE id=? AND consumed_at IS NULL AND expires_at>=?").bind(now,row.id,now),db.prepare("UPDATE students SET password_hash=?,password_salt=? WHERE email=?").bind(h.hash,h.salt,row.email),db.prepare("DELETE FROM sessions WHERE email=?").bind(row.email)]);if(!res[0]?.meta.changes||!res[1]?.meta.changes)return response({error:"Reset link is invalid or expired."},400);return response({ok:true});}
  if(route==="logout"){const t=getCookie(req);if(t)await db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha(t)).run();return response({ok:true},200,{"set-cookie":cookie("",req,0)});}return response({error:"Not found."},404); }
 
-export default { async fetch(req,env){const u=new URL(req.url);if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };
+
+async function currentStudent(req,db,now){
+ const token=getCookie(req);
+ if(!token)return null;
+ return db.prepare("SELECT students.email FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(token),now).first();
+}
+async function admin(req,env,path){
+ const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join("/");
+ if(!db||!env.AUTH_SECRET||env.AUTH_SECRET.length<32)return response({error:"Administration is not configured."},503);
+ await ensureSchema(db);
+ const student=await currentStudent(req,db,now);
+ if(!student)return response({error:"Sign in is required."},401);
+ if(student.email!==ADMIN_EMAIL)return response({error:"This area is restricted to the Super Admin."},403);
+ if(req.method==="GET"&&route==="overview"){
+  const [students,sessions,pending,limitedRows,latest]=await Promise.all([
+   db.prepare("SELECT COUNT(*) AS total FROM students").first(),
+   db.prepare("SELECT COUNT(*) AS total FROM sessions WHERE expires_at>?").bind(now).first(),
+   db.prepare("SELECT COUNT(*) AS total FROM auth_tokens WHERE consumed_at IS NULL AND expires_at>?").bind(now).first(),
+   db.prepare("SELECT COUNT(*) AS total FROM auth_limits WHERE reset_at>?").bind(now).first(),
+   db.prepare("SELECT email,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 10").all()
+  ]);
+  return response({admin:{email:student.email},stats:{students:Number(students?.total||0),activeSessions:Number(sessions?.total||0),pendingTokens:Number(pending?.total||0),activeRateLimits:Number(limitedRows?.total||0)},latestStudents:latest.results||[]});
+ }
+ if(req.method==="GET"&&route==="students"){
+  const q=(new URL(req.url).searchParams.get("q")||"").trim().toLowerCase().slice(0,100);
+  const rows=q
+   ? await db.prepare("SELECT email,verified_at,created_at FROM students WHERE email LIKE ? ORDER BY created_at DESC LIMIT 100").bind("%"+q+"%").all()
+   : await db.prepare("SELECT email,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 100").all();
+  return response({students:rows.results||[]});
+ }
+ if(req.method==="POST"&&route==="sessions/revoke"){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);
+  let data;try{data=await req.json();}catch{return response({error:"Invalid request."},400)}
+  const email=emailOf(data.email);
+  if(!EMAIL_RE.test(email))return response({error:"Invalid student email."},400);
+  const result=await db.prepare("DELETE FROM sessions WHERE email=?").bind(email).run();
+  return response({ok:true,revoked:Number(result.meta?.changes||0)});
+ }
+ return response({error:"Not found."},404);
+}
+
+export default { async fetch(req,env){const u=new URL(req.url);if(u.pathname.startsWith("/api/admin/"))try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };
