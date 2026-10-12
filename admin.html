@@ -248,7 +248,7 @@
 
     $("logout").addEventListener("click", async () => {
       try { await api("/api/auth/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); } catch {}
-      location.href = "/";
+      location.replace("https://gossipbh.com/");
     });
 
     loadOverview();
