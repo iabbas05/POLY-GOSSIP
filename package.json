@@ -1,0 +1,13 @@
+{
+  "name": "gossip-bh",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/validate.mjs",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply gossip-bh-db --remote"
+  },
+  "devDependencies": {
+    "wrangler": "4.92.0"
+  }
+}
