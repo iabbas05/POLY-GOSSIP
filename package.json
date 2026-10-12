@@ -1,9 +1,9 @@
 {
-  "name": "gossip-bh",
+  "name": "poly-gossip",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/validate.mjs",
+    "build": "node --check index.js",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply gossip-bh-db --remote"
   },
