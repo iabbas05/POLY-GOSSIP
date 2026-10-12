@@ -41,7 +41,7 @@ function getCookie(req) { return (req.headers.get("cookie")||"").match(/(?:^|;\s
 function emailOf(v) { return typeof v==="string"?v.trim().toLowerCase():""; }
 async function limited(env,req,id) { const now=Math.floor(Date.now()/1000), end=now+900; for(const raw of ["mail:"+id,"ip:"+(req.headers.get("cf-connecting-ip")||"unknown")]) { const bucket=await sha(env.AUTH_SECRET+":"+raw); const row=await env.DB.prepare("INSERT INTO auth_limits (bucket,count,reset_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=CASE WHEN auth_limits.reset_at<=? THEN 1 ELSE auth_limits.count+1 END,reset_at=CASE WHEN auth_limits.reset_at<=? THEN excluded.reset_at ELSE auth_limits.reset_at END RETURNING count").bind(bucket,end,now,now).first(); if(!row||row.count>(raw.startsWith("ip:")?30:6)) return false; } return true; }
 function mail(env,title,text,action,foot) { const logo=(env.PUBLIC_APP_URL||"")+"/mascot.jpg"; return `<!doctype html><html><body style="margin:0;background:#f2f5f8;font-family:Arial,sans-serif;color:#343a40"><table width="100%" style="padding:28px 12px;background:#f2f5f8"><tr><td align="center"><table width="100%" style="max-width:520px;background:white;border:1px solid #dfe3e7"><tr><td style="padding:22px 24px;border-bottom:1px solid #e8ecef"><img src="${logo}" width="42" height="42" style="vertical-align:middle;border-radius:50%;object-fit:cover"><b style="margin-left:10px;font-size:17px">Gossip BH</b><div style="margin:5px 0 0 52px;color:#74808a;font-size:11px">Bahrain Polytechnic student community</div></td></tr><tr><td style="padding:28px 24px"><div style="font-size:28px">✉️</div><h1 style="font-size:22px">${title}</h1><p style="font-size:14px;line-height:1.6;color:#66717b">${text}</p>${action}<p style="font-size:12px;color:#7b858d">${foot}</p></td></tr><tr><td style="padding:17px 24px;background:#f7f8f9;border-top:1px solid #e8ecef;color:#7e8992;font-size:11px">If you did not request this, ignore this message.<br>© Gossip BH</td></tr></table></td></tr></table></body></html>`; }
-async function send(env,to,subject,html) { if(!env.RESEND_API_KEY||!env.MAIL_FROM) throw Error("MAIL"); const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{authorization:"Bearer "+env.RESEND_API_KEY,"content-type":"application/json"},body:JSON.stringify({from:env.MAIL_FROM,to:[to],subject,html})}); if(!r.ok) throw Error("MAIL"); }
+async function send(env,to,subject,html) { if(!env.RESEND_API_KEY||!env.MAIL_FROM) throw Error("MAIL_CONFIG"); const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{authorization:"Bearer "+env.RESEND_API_KEY,"content-type":"application/json"},body:JSON.stringify({from:env.MAIL_FROM,to:[to],subject,html})}); if(!r.ok){const detail=(await r.text()).slice(0,500);console.error("Resend rejected email",r.status,detail);throw Error("MAIL_SEND");} }
 function same(a,b){if(a.length!==b.length)return false;let n=0;for(let i=0;i<a.length;i++)n|=a.charCodeAt(i)^b.charCodeAt(i);return n===0;}
 async function auth(req,env,path){ const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join("/"); if(!db||!env.AUTH_SECRET||env.AUTH_SECRET.length<32)return response({error:"Authentication is not configured."},503); await ensureSchema(db);
  if(req.method==="GET"&&route==="session"){const t=getCookie(req);if(!t)return response({student:null});const r=await db.prepare("SELECT students.email FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(t),now).first();return response({student:r?{email:r.email,verified:true}:null});}
@@ -58,6 +58,15 @@ async function currentStudent(req,db,now){
  const token=getCookie(req);
  if(!token)return null;
  return db.prepare("SELECT students.email FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(token),now).first();
+}
+async function publicConfig(req,env){
+ const now=Math.floor(Date.now()/1000);await ensureSchema(env.DB);
+ const student=await currentStudent(req,env.DB,now);
+ const [settings,announcements]=await Promise.all([
+  env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('registration_enabled','posting_enabled','comments_enabled','require_post_approval','announcement_en','announcement_ar')").all(),
+  env.DB.prepare("SELECT id,body,image_key,action_label,action_url,created_at FROM announcements WHERE active=1 ORDER BY created_at DESC LIMIT 8").all()
+ ]);
+ return response({authenticated:!!student,settings:Object.fromEntries((settings.results||[]).map(x=>[x.key,x.value])),announcements:(announcements.results||[]).map(a=>({...a,image_url:a.image_key?'/media/'+a.image_key:null}))});
 }
 async function community(req,env,path){
  const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join('/');
@@ -94,16 +103,51 @@ async function admin(req,env,path){
    db.prepare("SELECT COUNT(*) AS total FROM sessions WHERE expires_at>?").bind(now).first(),
    db.prepare("SELECT COUNT(*) AS total FROM auth_tokens WHERE consumed_at IS NULL AND expires_at>?").bind(now).first(),
    db.prepare("SELECT COUNT(*) AS total FROM auth_limits WHERE reset_at>?").bind(now).first(),
-   db.prepare("SELECT email,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 10").all()
+   db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 10").all()
   ]);
   return response({admin:{email:student.email},stats:{students:Number(students?.total||0),activeSessions:Number(sessions?.total||0),pendingTokens:Number(pending?.total||0),activeRateLimits:Number(limitedRows?.total||0)},latestStudents:latest.results||[]});
  }
  if(req.method==="GET"&&route==="students"){
   const q=(new URL(req.url).searchParams.get("q")||"").trim().toLowerCase().slice(0,100);
   const rows=q
-   ? await db.prepare("SELECT email,verified_at,created_at FROM students WHERE email LIKE ? ORDER BY created_at DESC LIMIT 100").bind("%"+q+"%").all()
-   : await db.prepare("SELECT email,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 100").all();
+   ? await db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students WHERE email LIKE ? ORDER BY created_at DESC LIMIT 100").bind("%"+q+"%").all()
+   : await db.prepare("SELECT email,role,status,suspended_until,suspension_reason,verified_at,created_at FROM students ORDER BY created_at DESC LIMIT 100").all();
   return response({students:rows.results||[]});
+ }
+ if(req.method==="GET"&&route==="settings"){
+  const rows=await db.prepare("SELECT key,value,updated_at FROM app_settings ORDER BY key").all();
+  return response({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),mail:{provider:'Resend',configured:!!env.RESEND_API_KEY,from:env.MAIL_FROM||''}});
+ }
+ if(req.method==="PUT"&&route==="settings"){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);
+  let data;try{data=await req.json()}catch{return response({error:"Invalid request."},400)}
+  const allowed=new Set(['registration_enabled','posting_enabled','comments_enabled','require_post_approval','announcement_en','announcement_ar','mail_sender_name','mail_sender_address','verification_subject','reset_subject']);
+  const statements=[];for(const [key,raw] of Object.entries(data.settings||{})){if(!allowed.has(key))continue;const value=String(raw).trim().slice(0,500);statements.push(db.prepare("INSERT INTO app_settings(key,value,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(key,value,student.email,now));}
+  if(statements.length)await db.batch(statements);return response({ok:true,updated:statements.length});
+ }
+ if(req.method==="POST"&&route==="email/test"){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);
+  await send(env,ADMIN_EMAIL,"Gossip BH email test",mail(env,"Email delivery is working","This message confirms that the verified Gossip BH domain and encrypted Resend key are working.","","Sent from the Super Admin control center."));
+  return response({ok:true,sentTo:ADMIN_EMAIL});
+ }
+ if(req.method==="POST"&&route==="students/status"){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);let data;try{data=await req.json()}catch{return response({error:"Invalid request."},400)}
+  const email=emailOf(data.email),status=data.status==='active'?'active':'suspended',reason=String(data.reason||'').trim().slice(0,300),until=status==='suspended'&&Number.isFinite(Number(data.suspendedUntil))?Number(data.suspendedUntil):null;
+  if(!email||email===ADMIN_EMAIL||status==='suspended'&&!reason)return response({error:"Choose a student and provide a suspension reason."},400);
+  const result=await db.prepare("UPDATE students SET status=?,suspended_until=?,suspension_reason=? WHERE email=?").bind(status,until,status==='suspended'?reason:null,email).run();if(!result.meta?.changes)return response({error:"Student not found."},404);
+  if(status==='suspended')await db.prepare("DELETE FROM sessions WHERE email=?").bind(email).run();return response({ok:true});
+ }
+ if(req.method==="GET"&&route==="posts"){
+  const status=(new URL(req.url).searchParams.get('status')||'published').slice(0,20);const rows=await db.prepare("SELECT p.id,p.author_email,p.body,p.status,p.created_at,pr.username,pr.display_name FROM social_posts p LEFT JOIN profiles pr ON pr.email=p.author_email WHERE p.status=? ORDER BY p.created_at DESC LIMIT 100").bind(status).all();return response({posts:rows.results||[]});
+ }
+ if(req.method==="PATCH"&&path[0]==="posts"&&path[1]){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);let data;try{data=await req.json()}catch{return response({error:"Invalid request."},400)}const status=['published','pending','removed'].includes(data.status)?data.status:null;if(!status)return response({error:"Invalid status."},400);await db.prepare("UPDATE social_posts SET status=?,published_at=CASE WHEN ?='published' THEN COALESCE(published_at,?) ELSE published_at END,updated_at=? WHERE id=?").bind(status,status,now,now,path[1]).run();return response({ok:true});
+ }
+ if(req.method==="GET"&&route==="reports"){
+  const status=(new URL(req.url).searchParams.get('status')||'open').slice(0,20);const rows=await db.prepare("SELECT * FROM reports WHERE status=? ORDER BY created_at DESC LIMIT 100").bind(status).all();return response({reports:rows.results||[]});
+ }
+ if(req.method==="PATCH"&&path[0]==="reports"&&path[1]){
+  if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);let data;try{data=await req.json()}catch{return response({error:"Invalid request."},400)}const status=['open','resolved','dismissed'].includes(data.status)?data.status:null;if(!status)return response({error:"Invalid status."},400);await db.prepare("UPDATE reports SET status=?,resolution=?,resolved_by=?,resolved_at=? WHERE id=?").bind(status,String(data.resolution||'').slice(0,500),student.email,status==='open'?null:now,path[1]).run();return response({ok:true});
  }
  if(req.method==="POST"&&route==="sessions/revoke"){
   if(req.headers.get("origin")!==new URL(req.url).origin)return response({error:"Request origin could not be verified."},403);
@@ -116,4 +160,4 @@ async function admin(req,env,path){
  return response({error:"Not found."},404);
 }
 
-export default { async fetch(req,env){const u=new URL(req.url),isAdminHost=u.hostname.toLowerCase()==="admin.gossipbh.com";if(/(?:^|\/)\.|\.(?:sql|map|toml|jsonc|md|mjs)$/i.test(u.pathname)||u.pathname==="/package.json")return response({error:"Not found."},404);if(u.pathname.startsWith("/api/admin/")){if(!isAdminHost)return response({error:"Administration is available only on admin.gossipbh.com."},404);try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/community/"))try{return await community(req,env,u.pathname.slice("/api/community/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(isAdminHost&&(u.pathname==="/"||u.pathname==="/admin.html"))return env.ASSETS.fetch(new Request(new URL("/admin.html",req.url)));if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };
+export default { async fetch(req,env){const u=new URL(req.url),isAdminHost=u.hostname.toLowerCase()==="admin.gossipbh.com";if(/(?:^|\/)\.|\.(?:sql|map|toml|jsonc|md|mjs)$/i.test(u.pathname)||u.pathname==="/package.json")return response({error:"Not found."},404);if(req.method==="GET"&&u.pathname==="/api/config")try{return await publicConfig(req,env)}catch{return response({error:"Configuration is unavailable."},500)}if(u.pathname.startsWith("/api/admin/")){if(!isAdminHost)return response({error:"Administration is available only on admin.gossipbh.com."},404);try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch(error){console.error("Admin API error",error?.message);return response({error:"Something went wrong. Try again."},500)}}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/community/"))try{return await community(req,env,u.pathname.slice("/api/community/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith('/media/')&&env.MEDIA){const key=decodeURIComponent(u.pathname.slice(7));if(!key||key.includes('..'))return response({error:'Not found.'},404);const object=await env.MEDIA.get(key);if(!object)return response({error:'Not found.'},404);return new Response(object.body,{headers:{'content-type':object.httpMetadata?.contentType||'application/octet-stream','cache-control':'public,max-age=31536000,immutable','x-content-type-options':'nosniff'}})}if(isAdminHost&&(u.pathname==="/"||u.pathname==="/admin.html"))return env.ASSETS.fetch(new Request(new URL("/admin.html",req.url)));if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };

@@ -58,9 +58,10 @@
     .empty{text-align:center;padding:35px;color:var(--muted)}
     .footer-note{margin-top:13px;color:#7a858e;font-size:11px}
     .loader{width:30px;height:30px;border:3px solid #dbe8f2;border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;margin:70px auto}
+    .admin-tabs{display:flex;gap:7px;overflow:auto;margin:0 0 18px;padding-bottom:2px}.admin-tabs button{white-space:nowrap;border:1px solid var(--line);background:#fff;color:var(--muted);padding:9px 13px;border-radius:4px;font-weight:750}.admin-tabs button.active{background:var(--blue);border-color:var(--blue);color:#fff}.admin-view{display:none}.admin-view.active{display:block}.stack{display:grid;gap:16px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;padding:18px}.field label{display:block;font-size:12px;font-weight:750;margin-bottom:6px}.field input,.field textarea,.field select{width:100%;border:1px solid #bfc8cf;border-radius:4px;padding:10px;background:#fff}.field textarea{min-height:92px;resize:vertical}.switch-row{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:13px 0;border-bottom:1px solid #edf0f2}.switch-row input{width:20px;height:20px}.panel-body{padding:18px}.actions{display:flex;gap:8px;flex-wrap:wrap}.danger{border:1px solid #e1b6b2;background:#fff;color:var(--danger);padding:8px 10px;border-radius:4px;font-weight:700}.muted-btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:8px 10px;border-radius:4px;font-weight:700}.list{display:grid}.list-item{padding:15px 18px;border-bottom:1px solid #e8ecef}.list-item:last-child{border-bottom:0}.list-item h3{font-size:14px;margin:0 0 5px}.list-item p{margin:0 0 10px;color:var(--muted);white-space:pre-wrap}.list-meta{font-size:11px;color:#87919a;margin-bottom:9px}.toast{position:fixed;right:20px;bottom:20px;background:#18242e;color:#fff;padding:12px 15px;border-radius:5px;box-shadow:var(--shadow);display:none;z-index:20}.toast.show{display:block}
     @keyframes spin{to{transform:rotate(360deg)}}
     @media(max-width:820px){.cards{grid-template-columns:repeat(2,1fr)}.intro{align-items:flex-start;flex-direction:column}.panel-head{align-items:stretch;flex-direction:column}.search{min-width:0;width:100%}}
-    @media(max-width:520px){.topbar-inner,main{padding-left:15px;padding-right:15px}.brand small,.admin-pill{display:none}.cards{grid-template-columns:1fr 1fr;gap:9px}.card{padding:14px}.card-value{font-size:25px}h1{font-size:24px}.ghost{padding:7px 9px}}
+    @media(max-width:520px){.topbar-inner,main{padding-left:15px;padding-right:15px}.brand small,.admin-pill{display:none}.cards{grid-template-columns:1fr 1fr;gap:9px}.card{padding:14px}.card-value{font-size:25px}h1{font-size:24px}.ghost{padding:7px 9px}.form-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -102,7 +103,11 @@
         <article class="card"><div class="card-label">Rate limits</div><div class="card-value" id="stat-limits">—</div><div class="card-note">Active protection buckets</div></article>
       </div>
 
-      <section class="panel">
+      <nav class="admin-tabs" aria-label="Admin sections">
+        <button class="active" data-view="students">Students</button><button data-view="posts">Posts</button><button data-view="reports">Reports</button><button data-view="settings">App settings</button>
+      </nav>
+
+      <section class="panel admin-view active" id="view-students">
         <div class="panel-head">
           <div class="panel-title"><h2>Student accounts</h2><p>Latest 100 accounts. Passwords are never displayed.</p></div>
           <form class="search" id="search-form">
@@ -119,8 +124,29 @@
         </div>
       </section>
       <p class="footer-note">Revoking sessions signs the selected student out on every device without deleting their account.</p>
+
+      <section class="panel admin-view" id="view-posts">
+        <div class="panel-head"><div class="panel-title"><h2>Post moderation</h2><p>Review pending, published and removed posts.</p></div><select id="post-filter"><option value="pending">Pending</option><option value="published">Published</option><option value="removed">Removed</option></select></div><div class="list" id="posts-list"></div>
+      </section>
+
+      <section class="panel admin-view" id="view-reports">
+        <div class="panel-head"><div class="panel-title"><h2>Reports</h2><p>Resolve or dismiss community reports.</p></div><select id="report-filter"><option value="open">Open</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option></select></div><div class="list" id="reports-list"></div>
+      </section>
+
+      <section class="admin-view stack" id="view-settings">
+        <section class="panel"><div class="panel-head"><div class="panel-title"><h2>Community controls</h2><p>Changes apply immediately across Gossip BH.</p></div></div><div class="panel-body" id="toggle-settings"></div></section>
+        <section class="panel"><div class="panel-head"><div class="panel-title"><h2>Announcements and email</h2><p>The Resend API key stays encrypted in Cloudflare and is never shown here.</p></div></div><div class="form-grid">
+          <div class="field"><label for="announcement-en">Announcement (English)</label><textarea id="announcement-en"></textarea></div>
+          <div class="field"><label for="announcement-ar">Announcement (Arabic)</label><textarea id="announcement-ar"></textarea></div>
+          <div class="field"><label for="sender-name">Sender name</label><input id="sender-name" value="Gossip BH"></div>
+          <div class="field"><label for="sender-address">Sender address</label><input id="sender-address" value="auth@gossipbh.com"></div>
+          <div class="field"><label for="verification-subject">Verification subject</label><input id="verification-subject"></div>
+          <div class="field"><label for="reset-subject">Reset subject</label><input id="reset-subject"></div>
+        </div><div class="panel-body actions"><button class="primary" id="save-settings">Save settings</button><button class="muted-btn" id="test-email">Send test email</button><span id="mail-status" class="status"></span></div></section>
+      </section>
     </section>
   </main>
+  <div class="toast" id="toast" role="status"></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -132,6 +158,8 @@
       return data;
     };
     const dateText = (seconds) => seconds ? new Intl.DateTimeFormat("en-BH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(seconds * 1000)) : "—";
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+    function toast(message){$("toast").textContent=message;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),2800)}
 
     function showNotice(error) {
       $("loading").style.display = "none";
@@ -153,7 +181,8 @@
         const status = document.createElement("td");
         const badge = document.createElement("span");
         badge.className = "verified";
-        badge.textContent = "Verified";
+        badge.textContent = student.status === "suspended" ? "Suspended" : "Active";
+        if(student.status === "suspended"){badge.style.color="var(--danger)";badge.style.background="#fff1f0"}
         status.appendChild(badge);
         const joined = document.createElement("td");
         joined.textContent = dateText(student.created_at);
@@ -174,10 +203,20 @@
           }
         });
         action.appendChild(button);
+        if(student.email.toLowerCase() !== "iabbas05@icloud.com"){
+          const statusButton=document.createElement("button");statusButton.className=student.status==="suspended"?"muted-btn":"danger";statusButton.type="button";statusButton.textContent=student.status==="suspended"?"Reactivate":"Suspend";
+          statusButton.addEventListener("click",async()=>{let reason="";if(student.status!=="suspended"){reason=prompt("Suspension reason (required):")||"";if(!reason.trim())return}statusButton.disabled=true;try{await api("/api/admin/students/status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email:student.email,status:student.status==="suspended"?"active":"suspended",reason})});toast("Student status updated");loadStudents()}catch(error){toast(error.message)}finally{statusButton.disabled=false}});action.append(" ",statusButton);
+        }
         tr.append(email, status, joined, action);
         body.appendChild(tr);
       }
     }
+
+    async function loadStudents(){const data=await api("/api/admin/students?q="+encodeURIComponent($("search-input").value));renderStudents(data.students)}
+    async function loadPosts(){const status=$("post-filter").value,data=await api("/api/admin/posts?status="+status);$("posts-list").innerHTML=data.posts.length?data.posts.map(p=>`<article class="list-item"><div class="list-meta">${esc(p.username||p.author_email)} · ${dateText(p.created_at)}</div><p>${esc(p.body)}</p><div class="actions">${status!=="published"?`<button class="primary" data-post="${esc(p.id)}" data-status="published">Publish</button>`:""}${status!=="removed"?`<button class="danger" data-post="${esc(p.id)}" data-status="removed">Remove</button>`:""}</div></article>`).join(""):'<div class="empty">No posts in this queue.</div>';document.querySelectorAll('[data-post]').forEach(b=>b.onclick=async()=>{await api('/api/admin/posts/'+encodeURIComponent(b.dataset.post),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:b.dataset.status})});toast('Post updated');loadPosts()})}
+    async function loadReports(){const status=$("report-filter").value,data=await api("/api/admin/reports?status="+status);$("reports-list").innerHTML=data.reports.length?data.reports.map(r=>`<article class="list-item"><h3>${esc(r.target_type)} report</h3><div class="list-meta">${esc(r.reporter_email)} · ${dateText(r.created_at)}</div><p>${esc(r.reason)}${r.details?'<br>'+esc(r.details):''}</p>${status==='open'?`<div class="actions"><button class="primary" data-report="${esc(r.id)}" data-status="resolved">Resolve</button><button class="muted-btn" data-report="${esc(r.id)}" data-status="dismissed">Dismiss</button></div>`:''}</article>`).join(""):'<div class="empty">No reports in this queue.</div>';document.querySelectorAll('[data-report]').forEach(b=>b.onclick=async()=>{const resolution=prompt('Resolution note:')||'';await api('/api/admin/reports/'+encodeURIComponent(b.dataset.report),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:b.dataset.status,resolution})});toast('Report updated');loadReports()})}
+    const toggles=[['registration_enabled','Registration'],['posting_enabled','Posting'],['comments_enabled','Comments'],['require_post_approval','Require post approval']];
+    async function loadSettings(){const data=await api('/api/admin/settings');$('toggle-settings').innerHTML=toggles.map(([key,label])=>`<label class="switch-row"><span><strong>${label}</strong></span><input type="checkbox" data-setting="${key}" ${data.settings[key]==='true'?'checked':''}></label>`).join('');$('announcement-en').value=data.settings.announcement_en||'';$('announcement-ar').value=data.settings.announcement_ar||'';$('sender-name').value=data.settings.mail_sender_name||'Gossip BH';$('sender-address').value=data.settings.mail_sender_address||'auth@gossipbh.com';$('verification-subject').value=data.settings.verification_subject||'Verify your Gossip BH student account';$('reset-subject').value=data.settings.reset_subject||'Reset your Gossip BH password';$('mail-status').textContent=data.mail.configured?'Resend connected':'Email key missing'}
 
     async function loadOverview() {
       try {
@@ -200,6 +239,10 @@
         renderStudents(data.students);
       } catch (error) { alert(error.message); }
     });
+    document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x===button));document.querySelectorAll('.admin-view').forEach(v=>v.classList.toggle('active',v.id==='view-'+button.dataset.view));if(button.dataset.view==='posts')loadPosts().catch(e=>toast(e.message));if(button.dataset.view==='reports')loadReports().catch(e=>toast(e.message));if(button.dataset.view==='settings')loadSettings().catch(e=>toast(e.message))});
+    $("post-filter").onchange=()=>loadPosts().catch(e=>toast(e.message));$("report-filter").onchange=()=>loadReports().catch(e=>toast(e.message));
+    $("save-settings").onclick=async()=>{const settings={};document.querySelectorAll('[data-setting]').forEach(x=>settings[x.dataset.setting]=String(x.checked));Object.assign(settings,{announcement_en:$("announcement-en").value,announcement_ar:$("announcement-ar").value,mail_sender_name:$("sender-name").value,mail_sender_address:$("sender-address").value,verification_subject:$("verification-subject").value,reset_subject:$("reset-subject").value});try{await api('/api/admin/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({settings})});toast('Settings saved')}catch(e){toast(e.message)}};
+    $("test-email").onclick=async()=>{const button=$("test-email");button.disabled=true;try{await api('/api/admin/email/test',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});toast('Test email sent to the Super Admin')}catch(e){toast(e.message)}finally{button.disabled=false}};
 
     $("logout").addEventListener("click", async () => {
       try { await api("/api/auth/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); } catch {}
