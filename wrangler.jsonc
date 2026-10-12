@@ -8,7 +8,7 @@
     "directory": ".",
     "binding": "ASSETS",
     "run_worker_first": [
-      "/api/*"
+      "/*"
     ],
     "not_found_handling": "single-page-application"
   },
@@ -18,6 +18,12 @@
       "database_name": "gossip-bh-db",
       "database_id": "288a6596-9f5a-4e00-823f-1e5014cc3e26",
       "migrations_dir": "."
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "gossip-bh-media"
     }
   ],
   "vars": {
@@ -30,6 +36,10 @@
     },
     {
       "pattern": "www.gossipbh.com",
+      "custom_domain": true
+    },
+    {
+      "pattern": "admin.gossipbh.com",
       "custom_domain": true
     }
   ]

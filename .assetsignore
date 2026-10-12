@@ -1,5 +1,8 @@
 .git
 .github
+.wrangler
+.gitignore
+.assetsignore
 node_modules
 index.js
 package.json
@@ -10,3 +13,4 @@ README.md
 validate.mjs
 wrangler.jsonc
 0000_gossip_auth.sql
+0001_social_app.sql

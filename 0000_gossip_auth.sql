@@ -34,3 +34,11 @@ CREATE TABLE IF NOT EXISTS `auth_limits` (
   `count` integer NOT NULL,
   `reset_at` integer NOT NULL
 );
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `posts` (`id` text PRIMARY KEY NOT NULL, `author_email` text NOT NULL, `tag` text NOT NULL, `body` text NOT NULL, `status` text NOT NULL DEFAULT 'published', `created_at` integer NOT NULL, `updated_at` integer NOT NULL);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `posts_status_created_idx` ON `posts` (`status`, `created_at` DESC);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `post_votes` (`post_id` text NOT NULL, `email` text NOT NULL, `created_at` integer NOT NULL, PRIMARY KEY (`post_id`, `email`));
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `post_reports` (`id` text PRIMARY KEY NOT NULL, `post_id` text NOT NULL, `reporter_email` text NOT NULL, `reason` text NOT NULL, `created_at` integer NOT NULL);

@@ -2,8 +2,8 @@ const COOKIE = "gbh_session";
 const SESSION_SECONDS = 60 * 60 * 24 * 30;
 const OTP_SECONDS = 600;
 const RESET_SECONDS = 1800;
-const EMAIL_RE = /^[a-z0-9._%+-]+@student\.polytechnic\.bh$/;
-const ADMIN_EMAIL = "202401431@student.polytechnic.bh";
+const EMAIL_RE = /^(?:[a-z0-9._%+-]+@student\.polytechnic\.bh|iabbas05@icloud\.com)$/;
+const ADMIN_EMAIL = "iabbas05@icloud.com";
 const encoder = new TextEncoder();
 let schemaReady;
 function ensureSchema(db) {
@@ -15,6 +15,10 @@ function ensureSchema(db) {
       db.prepare("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)"),
       db.prepare("CREATE INDEX IF NOT EXISTS sessions_email_idx ON sessions (email)"),
       db.prepare("CREATE TABLE IF NOT EXISTS auth_limits (bucket TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)")
+      ,db.prepare("CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY NOT NULL, author_email TEXT NOT NULL, tag TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'published', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+      ,db.prepare("CREATE INDEX IF NOT EXISTS posts_status_created_idx ON posts (status, created_at DESC)")
+      ,db.prepare("CREATE TABLE IF NOT EXISTS post_votes (post_id TEXT NOT NULL, email TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (post_id, email))")
+      ,db.prepare("CREATE TABLE IF NOT EXISTS post_reports (id TEXT PRIMARY KEY NOT NULL, post_id TEXT NOT NULL, reporter_email TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL)")
     ]).catch((error) => {
       schemaReady = undefined;
       throw error;
@@ -23,13 +27,16 @@ function ensureSchema(db) {
   return schemaReady;
 }
 
+function id(){return b64(crypto.getRandomValues(new Uint8Array(18)));}
+function safeTag(v){const tag=typeof v==='string'?v.trim().toUpperCase():'';return ['CAMPUS','POLYGOSSIP','CONFESSION','HELP'].includes(tag)?tag:'POLYGOSSIP';}
+
 const b64 = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 const unb64 = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0));
 async function sha(s) { return b64(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(s)))); }
 async function mac(env, s) { const k = await crypto.subtle.importKey("raw", encoder.encode(env.AUTH_SECRET), {name:"HMAC",hash:"SHA-256"}, false,["sign"]); return b64(new Uint8Array(await crypto.subtle.sign("HMAC",k,encoder.encode(s)))); }
 async function password(s, salt = crypto.getRandomValues(new Uint8Array(16))) { const key = await crypto.subtle.importKey("raw",encoder.encode(s),"PBKDF2",false,["deriveBits"]); const bits = await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt,iterations:600000},key,256); return {salt:b64(salt), hash:b64(new Uint8Array(bits))}; }
 function response(data,status=200,headers={}) { return Response.json(data,{status,headers:{"cache-control":"no-store","x-content-type-options":"nosniff",...headers}}); }
-function cookie(value,req,age=SESSION_SECONDS) { return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${new URL(req.url).protocol==="https:"?"; Secure":""}`; }
+function cookie(value,req,age=SESSION_SECONDS) { const url=new URL(req.url),shared=url.hostname==="gossipbh.com"||url.hostname.endsWith(".gossipbh.com")?"; Domain=.gossipbh.com":"";return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${shared}${url.protocol==="https:"?"; Secure":""}`; }
 function getCookie(req) { return (req.headers.get("cookie")||"").match(/(?:^|;\s*)gbh_session=([^;]+)/)?.[1]||""; }
 function emailOf(v) { return typeof v==="string"?v.trim().toLowerCase():""; }
 async function limited(env,req,id) { const now=Math.floor(Date.now()/1000), end=now+900; for(const raw of ["mail:"+id,"ip:"+(req.headers.get("cf-connecting-ip")||"unknown")]) { const bucket=await sha(env.AUTH_SECRET+":"+raw); const row=await env.DB.prepare("INSERT INTO auth_limits (bucket,count,reset_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=CASE WHEN auth_limits.reset_at<=? THEN 1 ELSE auth_limits.count+1 END,reset_at=CASE WHEN auth_limits.reset_at<=? THEN excluded.reset_at ELSE auth_limits.reset_at END RETURNING count").bind(bucket,end,now,now).first(); if(!row||row.count>(raw.startsWith("ip:")?30:6)) return false; } return true; }
@@ -51,6 +58,28 @@ async function currentStudent(req,db,now){
  const token=getCookie(req);
  if(!token)return null;
  return db.prepare("SELECT students.email FROM sessions JOIN students ON students.email=sessions.email WHERE sessions.token_hash=? AND sessions.expires_at>? AND students.verified_at>0 LIMIT 1").bind(await sha(token),now).first();
+}
+async function community(req,env,path){
+ const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join('/');
+ if(!db||!env.AUTH_SECRET||env.AUTH_SECRET.length<32)return response({error:'Community is not configured.'},503);
+ await ensureSchema(db); const student=await currentStudent(req,db,now); if(!student)return response({error:'Sign in is required.'},401);
+ if(req.method==='GET'&&route==='posts'){
+  const rows=await db.prepare("SELECT p.id,p.tag,p.body,p.created_at,COUNT(DISTINCT v.email) AS votes FROM posts p LEFT JOIN post_votes v ON v.post_id=p.id WHERE p.status='published' GROUP BY p.id ORDER BY p.created_at DESC LIMIT 100").all();
+  return response({posts:(rows.results||[]).map(p=>({...p,votes:Number(p.votes||0),replies:0}))});
+ }
+ if(req.method==='POST'&&route==='posts'){
+  if(req.headers.get('origin')!==new URL(req.url).origin)return response({error:'Request origin could not be verified.'},403);
+  let d;try{d=await req.json()}catch{return response({error:'Invalid request.'},400)}
+  const body=typeof d.body==='string'?d.body.trim():'';if(body.length<3||body.length>1000)return response({error:'Write between 3 and 1000 characters.'},400);
+  const postId=id();await db.prepare("INSERT INTO posts (id,author_email,tag,body,status,created_at,updated_at) VALUES (?,?,?,?,'published',?,?)").bind(postId,student.email,safeTag(d.tag),body,now,now).run();return response({ok:true,post:{id:postId,tag:safeTag(d.tag),body,created_at:now,votes:0,replies:0}},201);
+ }
+ if(req.method==='POST'&&route.match(/^posts\/[^/]+\/vote$/)){
+  if(req.headers.get('origin')!==new URL(req.url).origin)return response({error:'Request origin could not be verified.'},403);const postId=path[1];const post=await db.prepare("SELECT id FROM posts WHERE id=? AND status='published'").bind(postId).first();if(!post)return response({error:'Post not found.'},404);const existing=await db.prepare('SELECT post_id FROM post_votes WHERE post_id=? AND email=?').bind(postId,student.email).first();if(existing)await db.prepare('DELETE FROM post_votes WHERE post_id=? AND email=?').bind(postId,student.email).run();else await db.prepare('INSERT INTO post_votes (post_id,email,created_at) VALUES (?,?,?)').bind(postId,student.email,now).run();const count=await db.prepare('SELECT COUNT(*) AS total FROM post_votes WHERE post_id=?').bind(postId).first();return response({ok:true,voted:!existing,votes:Number(count?.total||0)});
+ }
+ if(req.method==='POST'&&route==='reports'){
+  if(req.headers.get('origin')!==new URL(req.url).origin)return response({error:'Request origin could not be verified.'},403);let d;try{d=await req.json()}catch{return response({error:'Invalid request.'},400)}const postId=typeof d.postId==='string'?d.postId:'';const reason=typeof d.reason==='string'?d.reason.trim().slice(0,200):'Other';if(!postId)return response({error:'Post is required.'},400);await db.prepare('INSERT INTO post_reports (id,post_id,reporter_email,reason,created_at) VALUES (?,?,?,?,?)').bind(id(),postId,student.email,reason,now).run();return response({ok:true},201);
+ }
+ return response({error:'Not found.'},404);
 }
 async function admin(req,env,path){
  const db=env.DB,now=Math.floor(Date.now()/1000),route=path.join("/");
@@ -87,4 +116,4 @@ async function admin(req,env,path){
  return response({error:"Not found."},404);
 }
 
-export default { async fetch(req,env){const u=new URL(req.url);if(u.pathname.startsWith("/api/admin/"))try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };
+export default { async fetch(req,env){const u=new URL(req.url),isAdminHost=u.hostname.toLowerCase()==="admin.gossipbh.com";if(/(?:^|\/)\.|\.(?:sql|map|toml|jsonc|md|mjs)$/i.test(u.pathname)||u.pathname==="/package.json")return response({error:"Not found."},404);if(u.pathname.startsWith("/api/admin/")){if(!isAdminHost)return response({error:"Administration is available only on admin.gossipbh.com."},404);try{return await admin(req,env,u.pathname.slice("/api/admin/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}}if(u.pathname.startsWith("/api/auth/"))try{return await auth(req,env,u.pathname.slice("/api/auth/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(u.pathname.startsWith("/api/community/"))try{return await community(req,env,u.pathname.slice("/api/community/".length).split("/"));}catch{return response({error:"Something went wrong. Try again."},500)}if(isAdminHost&&(u.pathname==="/"||u.pathname==="/admin.html"))return env.ASSETS.fetch(new Request(new URL("/admin.html",req.url)));if(u.pathname==="/"||u.pathname==="/app.html")return env.ASSETS.fetch(new Request(new URL("/index.html",req.url)));return env.ASSETS.fetch(req);} };
