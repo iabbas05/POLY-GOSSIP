@@ -30,3 +30,12 @@ test('PWA has install icons and an offline cache',async()=>{
   assert.match(manifest,/icon-512\.png/);
   assert.match(worker,/caches\.match/);
 });
+
+test('student sessions persist and renew securely',async()=>{
+  const [worker,app]=await Promise.all(['index.js','app.js'].map(read));
+  assert.match(worker,/24 \* 180/);
+  assert.match(worker,/HttpOnly/);
+  assert.match(worker,/SameSite=Lax/);
+  assert.match(worker,/UPDATE sessions SET expires_at/);
+  assert.match(app,/api\/auth\/session/);
+});
