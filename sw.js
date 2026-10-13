@@ -1,5 +1,5 @@
 const CACHE_VERSION = "gossip-bh-v3";
-const CORE = ["/", "/index.html", "/app.css", "/app.js", "/mascot.jpg", "/manifest.json", "/icon-192.png", "/icon-512.png"];
+const CORE = ["/", "/index.html", "/app.css", "/app.js", "/logo-512.png", "/manifest.json", "/favicon-32.png", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_VERSION).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));

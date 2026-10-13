@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Gossip BH</title>
+  <desc id="desc">A split white and Polytechnic blue G mark with Gossip underneath.</desc>
+  <defs>
+    <clipPath id="mark"><rect x="192" y="128" width="640" height="640" rx="168"/></clipPath>
+    <linearGradient id="markFill" x1="0" x2="1"><stop offset="50%" stop-color="#ffffff"/><stop offset="50%" stop-color="#0868b8"/></linearGradient>
+    <linearGradient id="letterFill" x1="0" x2="1"><stop offset="50%" stop-color="#0868b8"/><stop offset="50%" stop-color="#ffffff"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="#ffffff"/>
+  <g clip-path="url(#mark)">
+    <rect x="192" y="128" width="640" height="640" fill="url(#markFill)"/>
+    <rect x="206" y="142" width="612" height="612" rx="154" fill="none" stroke="#0868b8" stroke-width="28"/>
+  </g>
+  <text x="512" y="625" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="470" font-weight="700" fill="url(#letterFill)">G</text>
+  <text x="512" y="908" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="116" font-weight="700" letter-spacing="24" fill="#15202b">GOSSIP</text>
+</svg>
