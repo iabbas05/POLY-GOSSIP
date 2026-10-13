@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check index.js",
+    "build": "node --check index.js && node --check social.js && node --check app.js && node validate.mjs",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply gossip-bh-db --remote"
   },
