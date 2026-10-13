@@ -30,6 +30,9 @@
     "PUBLIC_APP_URL": "https://gossipbh.com",
     "MAIL_FROM": "Gossip BH <auth@gossipbh.com>"
   },
+  "triggers": {
+    "crons": ["17 2 * * *"]
+  },
   "routes": [
     {
       "pattern": "gossipbh.com",
@@ -41,6 +44,10 @@
     },
     {
       "pattern": "admin.gossipbh.com",
+      "custom_domain": true
+    },
+    {
+      "pattern": "partner.gossipbh.com",
       "custom_domain": true
     }
   ]

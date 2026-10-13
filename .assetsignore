@@ -4,8 +4,10 @@
 .gitignore
 .assetsignore
 node_modules
+tests
 index.js
 social.js
+partner.js
 package.json
 bun.lock
 bun.lockb
@@ -15,3 +17,4 @@ validate.mjs
 wrangler.jsonc
 0000_gossip_auth.sql
 0001_social_app.sql
+0002_launch_readiness.sql

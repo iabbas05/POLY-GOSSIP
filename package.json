@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check index.js && node --check social.js && node --check app.js && node validate.mjs",
-    "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 migrations apply gossip-bh-db --remote"
+    "build": "node --check index.js && node --check social.js && node --check partner.js && node --check app.js && node validate.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "deploy": "npx wrangler@4.92.0 deploy",
+    "db:migrate": "npx wrangler@4.92.0 d1 migrations apply gossip-bh-db --remote"
   },
   "devDependencies": {
     "wrangler": "4.92.0"
