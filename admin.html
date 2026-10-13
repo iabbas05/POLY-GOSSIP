@@ -29,9 +29,10 @@
     .intro p{margin:0;color:var(--muted)}
     .status{display:flex;align-items:center;gap:7px;color:var(--success);font-size:12px;font-weight:700}
     .dot{width:8px;height:8px;border-radius:50%;background:#18a665;box-shadow:0 0 0 4px rgba(24,166,101,.12)}
-    .notice{display:none;background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);padding:22px;margin:28px auto;max-width:680px;box-shadow:var(--shadow)}
+    .notice{display:none;background:#fff;border:1px solid var(--line);padding:28px;margin:28px auto;max-width:460px;box-shadow:var(--shadow);border-radius:14px}
     .notice h2{margin:0 0 8px;font-size:20px}
     .notice p{margin:0 0 17px;color:var(--muted)}
+    .login-form{display:grid;gap:14px;margin-top:22px}.login-form label{display:grid;gap:6px;font-size:12px;font-weight:750}.login-form input{width:100%;border:1px solid #bfc8cf;border-radius:8px;padding:12px;background:#fff;outline:none}.login-form input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(15,108,191,.12)}.login-form .primary{width:100%;min-height:44px}.login-error{min-height:20px;margin:0!important;color:var(--danger)!important;font-size:12px}.login-help{display:block;text-align:center;color:var(--blue-dark);font-size:12px;text-underline-offset:3px}
     .primary{display:inline-flex;align-items:center;justify-content:center;border:0;background:var(--blue);color:#fff;text-decoration:none;padding:10px 15px;border-radius:4px;font-weight:750}
     #dashboard{display:none}
     .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:20px}
@@ -76,7 +77,7 @@
       </a>
       <div class="top-actions">
         <span class="admin-pill">S.ADMIN</span>
-        <button class="ghost" id="logout" type="button">Sign out</button>
+        <button class="ghost" id="logout" type="button" hidden>Sign out</button>
       </div>
     </div>
   </header>
@@ -85,9 +86,19 @@
     <div id="loading" class="loader" aria-label="Loading"></div>
 
     <section id="notice" class="notice">
-      <h2 id="notice-title">Restricted area</h2>
-      <p id="notice-text">This page is available only to the Super Admin.</p>
-      <a class="primary" href="/">Go to Gossip BH</a>
+      <h2 id="notice-title">Super Admin sign in</h2>
+      <p id="notice-text">Use the Super Admin account to continue.</p>
+      <form class="login-form" id="admin-login-form">
+        <label for="admin-login-email">Email
+          <input id="admin-login-email" type="email" value="iabbas05@icloud.com" autocomplete="username" required>
+        </label>
+        <label for="admin-login-password">Password
+          <input id="admin-login-password" type="password" autocomplete="current-password" required>
+        </label>
+        <p class="login-error" id="admin-login-error" role="alert"></p>
+        <button class="primary" id="admin-login-button" type="submit">Sign in</button>
+        <a class="login-help" href="https://gossipbh.com/app.html#forgot">Forgot password?</a>
+      </form>
     </section>
 
     <section id="dashboard">
@@ -185,8 +196,10 @@
       $("loading").style.display = "none";
       $("dashboard").style.display = "none";
       $("notice").style.display = "block";
-      $("notice-title").textContent = error.status === 401 ? "Sign in required" : error.status === 403 ? "Super Admin only" : "Backend unavailable";
-      $("notice-text").textContent = error.message;
+      const signedOut = error.status === 401;
+      $("notice-title").textContent = signedOut ? "Super Admin sign in" : error.status === 403 ? "Super Admin only" : "Backend unavailable";
+      $("notice-text").textContent = signedOut ? "Use the Super Admin account to continue." : error.message;
+      $("admin-login-form").style.display = signedOut ? "grid" : "none";
     }
 
     function renderStudents(students) {
@@ -254,9 +267,33 @@
         renderStudents(data.latestStudents);
         $("loading").style.display = "none";
         $("dashboard").style.display = "block";
+        $("notice").style.display = "none";
+        $("logout").hidden = false;
         handleRedemption().catch(error=>toast(error.message));
       } catch (error) { showNotice(error); }
     }
+
+    $("admin-login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("admin-login-button");
+      button.disabled = true;
+      button.textContent = "Signing in…";
+      $("admin-login-error").textContent = "";
+      try {
+        await api("/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: $("admin-login-email").value, password: $("admin-login-password").value })
+        });
+        $("admin-login-password").value = "";
+        await loadOverview();
+      } catch (error) {
+        $("admin-login-error").textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Sign in";
+      }
+    });
 
     async function handleRedemption(){const token=new URLSearchParams(location.search).get('redeem');if(!token)return;const data=await api('/api/admin/offers/validate?token='+encodeURIComponent(token)),claim=data.claim;history.replaceState({},'',location.pathname);if(!claim.valid)throw new Error(claim.redeemed_at?'This offer was already redeemed.':'This offer code has expired.');const approved=confirm(`VALID STUDENT OFFER\n\n${claim.title}\n${claim.partner_name}\nStudent: ${claim.student_email}\n\nRedeem this one-time offer now?`);if(!approved)return;const result=await api('/api/admin/offers/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})});toast(result.message||'Valid student offer')}
 
