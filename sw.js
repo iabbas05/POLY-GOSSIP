@@ -1,5 +1,5 @@
-const CACHE_VERSION = "gossip-bh-v5";
-const CORE = ["/", "/index.html", "/app.css", "/mobile.css?v=5", "/app.js?v=5", "/logo-512.png", "/manifest.json", "/favicon-32.png", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"];
+const CACHE_VERSION = "gossip-bh-v6";
+const CORE = ["/", "/index.html", "/app.css", "/mobile.css?v=6", "/app.js?v=6", "/logo-512.png", "/brand-icons/home.png", "/brand-icons/explore.png", "/brand-icons/poly-gossip.png", "/brand-icons/notifications.png", "/brand-icons/campus.png", "/brand-icons/comments.png", "/manifest.json", "/favicon-32.png", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_VERSION).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));
